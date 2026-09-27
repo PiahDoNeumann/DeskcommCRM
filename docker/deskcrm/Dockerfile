@@ -59,9 +59,10 @@ RUN PDFJS_DIR=$(basename node_modules/.pnpm/pdfjs-dist@*) && \
        ".next/standalone/.next/server/chunks/pdf.worker.mjs"
 
 # Worker: TypeScript -> um .mjs. O esbuild já vem no node_modules (dependência
-# do tsx); o `ls` falha o build se um dia ele sumir.
+# do tsx); o `ls` falha o build se um dia ele sumir. No Linux o bin/esbuild
+# é o binário nativo (ELF), então roda direto, sem `node` na frente.
 RUN ESBUILD=$(ls -d node_modules/.pnpm/esbuild@*/node_modules/esbuild | tail -1) && \
-    node "$ESBUILD/bin/esbuild" workers/agent-worker/main.ts \
+    "$ESBUILD/bin/esbuild" workers/agent-worker/main.ts \
       --bundle --platform=node --target=node22 --format=esm \
       --tsconfig=tsconfig.json \
       --external:pdfjs-dist --external:@napi-rs/canvas \
