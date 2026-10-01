@@ -1,0 +1,78 @@
+# Stack local no Docker Desktop (Windows) com a imagem única deskcrm.
+#
+# O Supabase NÃO está aqui: ele sobe pelo `supabase start` (CLI) e publica as
+# portas 54321 (API), 54322 (Postgres) e 54323 (Studio) no host. Os contêineres
+# daqui chegam nele por host.docker.internal; o navegador, por localhost.
+#
+# Uso: bash docker/deskcrm/local.sh up   (não chame este arquivo direto)
+
+services:
+  deskcrm:
+    image: piah2025/deskcrm:${DESKCRM_TAG:-local}
+    pull_policy: never
+    restart: unless-stopped
+    env_file: ../../.env.deskcrm-local
+    environment:
+      # Navegador usa NEXT_PUBLIC_SUPABASE_URL (localhost); o servidor, este.
+      SUPABASE_SERVER_URL: http://host.docker.internal:54321
+      WAHA_API_BASE_URL: http://waha:3000
+      WAHA_WEBHOOK_BASE_URL: http://deskcrm:3000
+      UPSTASH_REDIS_REST_URL: http://srh:80
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      waha:
+        condition: service_healthy
+      srh:
+        condition: service_started
+
+  waha:
+    image: devlikeapro/waha:latest-2026.7.2
+    restart: unless-stopped
+    ports:
+      # Dashboard do WAHA comanda a sessão do WhatsApp: só desta máquina.
+      - "127.0.0.1:3030:3000"
+    environment:
+      WAHA_API_KEY: "sha512:${WAHA_API_KEY_SHA512}"
+      WHATSAPP_HOOK_URL: http://deskcrm:3000/api/v1/webhooks/waha
+      WHATSAPP_HOOK_EVENTS: "message.any,message.ack,message.edited,message.revoked,session.status,state.change"
+      WHATSAPP_HOOK_HMAC: ${WAHA_HMAC_SECRET}
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+      WAHA_DASHBOARD_ENABLED: "true"
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+    volumes:
+      - waha-data:/app/.sessions
+      - waha-media:/app/.media
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  srh:
+    image: hiett/serverless-redis-http@sha256:5b0bb9239fce53abf87b2018a7a0deb9ec7bd900c5360738fe5fbeeb426f9150
+    restart: unless-stopped
+    environment:
+      SRH_MODE: env
+      SRH_TOKEN: ${SRH_TOKEN}
+      SRH_CONNECTION_STRING: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  waha-data:
+  waha-media:
