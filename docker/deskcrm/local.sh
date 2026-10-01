@@ -6,6 +6,7 @@
 #   bash docker/deskcrm/local.sh status    o que está de pé
 #   bash docker/deskcrm/local.sh logs      logs do app (Ctrl+C sai)
 #   bash docker/deskcrm/local.sh build     reconstrói a imagem com o código atual
+#   bash docker/deskcrm/local.sh studio    (re)sobe só o Studio do Supabase
 #   bash docker/deskcrm/local.sh baseline  reaplica supabase/baseline.sql (depois de sync com upstream)
 #   bash docker/deskcrm/local.sh reset     APAGA o banco local e recomeça do zero
 #
@@ -20,8 +21,8 @@ cd "$ROOT_DIR"
 ENV_FILE=".env.deskcrm-local"
 IMAGE="piah2025/deskcrm:local"
 COMPOSE=(docker compose -p deskcrm-local -f docker/deskcrm/docker-compose.local.yml --env-file "$ENV_FILE")
-# Serviços do Supabase que o app não usa (menos memória). Studio fica fora porque
-# o CLI monta uma pasta do Windows nele (snippets).
+# Serviços do Supabase que o app não usa (menos memória). O Studio fica fora do
+# CLI porque ele monta uma pasta do Windows nele (snippets); sobe por studio_up.
 SUPABASE_EXCLUDE="edge-runtime,vector,logflare,imgproxy,supavisor,studio"
 
 # O CLI do Supabase roda num workdir próprio (.deskcrm-local/, fora do git), com
@@ -40,6 +41,30 @@ supabase_up() {
   grep -qx '.deskcrm-local/' .git/info/exclude 2>/dev/null || echo '.deskcrm-local/' >> .git/info/exclude
   if supabase status >/dev/null 2>&1; then return; fi
   supabase start -x "$SUPABASE_EXCLUDE"
+}
+
+# Studio sem pasta: a mesma imagem do CLI, na rede do Supabase, sem volume.
+# Sem a pasta de snippets, consulta salva no SQL Editor não persiste.
+STUDIO="supabase_studio_deskcrm-local"
+
+studio_up() {
+  docker rm -f "$STUDIO" >/dev/null 2>&1 || true
+  local image
+  image="$(docker image ls public.ecr.aws/supabase/studio --format '{{.Repository}}:{{.Tag}}' | head -1)"
+  [[ -n "$image" ]] || image="public.ecr.aws/supabase/studio:latest"
+  docker run -d --name "$STUDIO" --network supabase_network_deskcrm-local \
+    -p 127.0.0.1:54323:3000 \
+    -e STUDIO_PG_META_URL=http://supabase_pg_meta_deskcrm-local:8080 \
+    -e POSTGRES_PASSWORD=postgres \
+    -e SUPABASE_URL=http://supabase_kong_deskcrm-local:8000 \
+    -e SUPABASE_PUBLIC_URL=http://localhost:54321 \
+    -e SUPABASE_ANON_KEY="$(sb_value ANON_KEY)" \
+    -e SUPABASE_SERVICE_KEY="$(sb_value SERVICE_ROLE_KEY)" \
+    -e AUTH_JWT_SECRET="$(sb_value JWT_SECRET)" \
+    -e DEFAULT_ORGANIZATION_NAME="DeskCRM Local" \
+    -e DEFAULT_PROJECT_NAME="deskcrm-local" \
+    -e NEXT_PUBLIC_ENABLE_LOGS=false \
+    "$image" >/dev/null
 }
 
 sb_value() { supabase status -o env 2>/dev/null | sed -nE "s/^$1=\"?([^\"]*)\"?$/\1/p"; }
@@ -145,12 +170,15 @@ case "${1:-}" in
     fi
     ensure_image
     "${COMPOSE[@]}" up -d
+    studio_up
     echo
     echo "App:      http://localhost:3000   (login: $(env_get OWNER_EMAIL), senha em $ENV_FILE)"
     echo "WAHA:     http://localhost:3030"
+    echo "Studio:   http://localhost:54323"
     ;;
   down)
     [[ -s "$ENV_FILE" ]] && "${COMPOSE[@]}" down
+    docker rm -f "$STUDIO" >/dev/null 2>&1 || true
     supabase stop
     ;;
   status)
@@ -167,8 +195,13 @@ case "${1:-}" in
   baseline)
     apply_baseline 0
     ;;
+  studio)
+    studio_up
+    echo "Studio:   http://localhost:54323"
+    ;;
   reset)
     [[ -s "$ENV_FILE" ]] && "${COMPOSE[@]}" down -v
+    docker rm -f "$STUDIO" >/dev/null 2>&1 || true
     supabase stop --no-backup
     rm -f "$ENV_FILE"
     echo "banco local apagado. Rode 'up' para recomeçar."
