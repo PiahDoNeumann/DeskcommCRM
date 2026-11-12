@@ -33,6 +33,29 @@ describe('parseSkillPackage', () => {
     }
   });
 
+  it('lê matcher.any_tags do frontmatter: a etiqueta do pacote não se perde na importação', () => {
+    const comEtiqueta = `---
+name: prospec-odonto
+description: Abordagem para dentistas.
+matcher:
+  any_keywords: [dentista, odontologia]
+  any_tags: [odonto, clinica]
+---
+Apresente-se e pergunte sobre a agenda.`;
+    const out = parseSkillPackage(makeZip({ 'SKILL.md': comEtiqueta }));
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.pkg.matcher.any_keywords).toEqual(['dentista', 'odontologia']);
+      expect(out.pkg.matcher.any_tags).toEqual(['odonto', 'clinica']);
+    }
+  });
+
+  it('pacote sem any_tags segue sem o campo', () => {
+    const out = parseSkillPackage(makeZip({ 'SKILL.md': validSkillMd }));
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.pkg.matcher.any_tags).toBeUndefined();
+  });
+
   it('SKILL.md ausente → erro de ensino', () => {
     const out = parseSkillPackage(makeZip({ 'leia.txt': 'oi' }));
     expect(out.ok).toBe(false);
@@ -110,5 +133,57 @@ corpo`;
     const out = parseSkillPackage(makeZip({ 'SKILL.md': comEspaco, 'assets/capa do produto.png': 'x' }));
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.pkg.files.map((f) => f.path)).toEqual(['assets/capa do produto.png']);
+  });
+
+  // #4203: o "Download ZIP" do GitHub embrulha tudo num diretório de topo. O
+  // SKILL.md está na raiz DESSE diretório, não na raiz do zip — e o parser
+  // respondia "precisa de um arquivo SKILL.md na raiz", que era falso.
+  it('pacote embrulhado num diretório de topo (humanizer-main/SKILL.md) é aceito', () => {
+    const out = parseSkillPackage(
+      makeZip({
+        'humanizer-main/SKILL.md': validSkillMd,
+        'humanizer-main/references/tabela.md': '# Tabela de frete\nSP: grátis',
+      }),
+    );
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.pkg.name).toBe('frete-gratis');
+      // O caminho no manifest é o DA SKILL, não o do embrulho: a chave no
+      // Storage é {org}/{nome}/{versão}/{caminho} e não pode carregar o nome
+      // que o GitHub deu ao diretório na hora do download.
+      expect(out.pkg.files.map((f) => f.path)).toEqual(['references/tabela.md']);
+      expect(out.pkg.files[0]?.entry.kind).toBe('reference');
+    }
+  });
+
+  it('embrulho de repositório: a mobília do repo (README, LICENSE, .github/) não vira erro nem arquivo da skill', () => {
+    const out = parseSkillPackage(
+      makeZip({
+        'humanizer-main/SKILL.md': validSkillMd,
+        'humanizer-main/README.md': '# humanizer',
+        'humanizer-main/LICENSE': 'MIT',
+        'humanizer-main/.github/workflows/validate.yml': 'on: push',
+        'humanizer-main/references/tabela.md': '# Tabela de frete\nSP: grátis',
+        'README.md': 'fora do embrulho também é mobília',
+      }),
+    );
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.pkg.files.map((f) => f.path)).toEqual(['references/tabela.md']);
+  });
+
+  it('dois diretórios de topo com SKILL.md → recusa com o MESMO code, sem adivinhar qual', () => {
+    const out = parseSkillPackage(
+      makeZip({
+        'humanizer-main/SKILL.md': validSkillMd,
+        'outra-skill/SKILL.md': validSkillMd,
+      }),
+    );
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error.code).toBe('skill_md_missing');
+      // A mensagem nomeia os candidatos: quem enviou escolhe, o parser não.
+      expect(out.error.message).toContain('humanizer-main');
+      expect(out.error.message).toContain('outra-skill');
+    }
   });
 });

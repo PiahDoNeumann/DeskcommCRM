@@ -1,6 +1,7 @@
 import { observeServiceOrigin } from "@/lib/atendimento/origem";
 import type { RiskBucket } from "@/lib/leads/risk-radar";
 import {
+  camposComAnexo,
   recusaDeCamposObrigatorios,
   settingsDoFunil,
   validaCamposExigidos,
@@ -141,6 +142,7 @@ import { registraFalhaDeAtividade } from "@/lib/leads/activity-write-failure";
 import { resolveActiveLeadForContact } from "@/lib/leads/active-lead";
 import { stageChangeReason } from "@/lib/leads/activity-emitter";
 import { podeOperarNoFunil } from "./escopo-de-funil";
+import { lerPosicaoDeEntrada } from "@/lib/leads/posicao-de-entrada";
 
 export interface ResultadoDaSincronizacao {
   moveu: boolean;
@@ -349,6 +351,7 @@ export async function sincronizaEstagioDoAgente(
   const vereditoDeCampos = validaCamposExigidos({
     lead: lead as unknown as Record<string, unknown>,
     settingsDoFunil: settings,
+    camposComAnexo: await camposComAnexo(admin, settings, input.organizationId, lead.id),
     destino: {
       stageId: destino.stageId,
       desfecho: etapaDeDestino?.is_won ? "won" : etapaDeDestino?.is_lost ? "lost" : null,
@@ -378,9 +381,10 @@ export async function sincronizaEstagioDoAgente(
     .maybeSingle();
 
   const serviceOrigin = await observeServiceOrigin(admin, input.organizationId, input.contactId);
+  const posicao = await lerPosicaoDeEntrada(admin, input.organizationId, destino.stageId);
   const { data: atualizadas, error } = await admin
     .from("crm_leads")
-    .update({ stage_id: destino.stageId })
+    .update({ stage_id: destino.stageId, ...(posicao === null ? {} : { position_in_stage: posicao }) })
     .eq("id", lead.id)
     // Trava otimista pelo estágio de ORIGEM: se um humano arrastou o card entre
     // a leitura e a escrita, o agente não atropela a decisão dele.

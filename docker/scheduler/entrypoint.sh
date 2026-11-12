@@ -59,17 +59,28 @@ CRONS="
 * * * * *|45|api/v1/cron/event-log-drain
 * * * * *|25|api/v1/cron/routing-worker
 */5 * * * *|25|api/v1/cron/recover-stuck-messages
+*/5 * * * *|25|api/v1/cron/recover-stuck-calls
 * * * * *|25|api/v1/cron/proposta-travada
 * * * * *|45|api/v1/cron/webhook-replay
 */5 * * * *|25|api/v1/cron/storage-redaction?limit=50
 */5 * * * *|25|api/v1/cron/snooze-watcher
 */5 * * * *|60|api/v1/cron/handoff-devolucao
 */5 * * * *|60|api/v1/cron/rodizio-devolucao
+# A FOTO GUARDADA SEM DESCRIÇÃO (MEDIA_VISION_WITHOUT_READER=defer). De 5 em 5
+# minutos: é o prazo para um follow-up, um rascunho ou uma integração passar a ver
+# a descrição da foto que chegou quando a empresa ainda não tinha quem a lesse.
+# Barato: um índice parcial vazio na maioria das instalações.
+*/5 * * * *|25|api/v1/cron/media-leitura-adiada
 # A CAMPANHA. Minuto a minuto, e a rodada manda no máximo uma mensagem por
 # número: é o cron que dá a cadência base, e o ritmo da campanha e do canal
 # (channel_knobs + pacing_ledger) só sabem torná-la mais lenta.
 * * * * *|45|api/v1/cron/campaign-worker
+# Módulo opcional: não instalado, só lê a lista de módulos e sai, sem tocar nas tabelas dele.
+* * * * *|55|api/v1/cron/cadencia-worker
 */5 * * * *|60|api/v1/cron/webhook-log-retention
+# OAuth por contato dos servidores MCP do agente (migration 9095): revoga no
+# terceiro o acesso cuja conversa encerrou (ou cujo contato foi anonimizado).
+*/5 * * * *|60|api/v1/cron/mcp-oauth-revogacao
 */5 * * * *|45|api/v1/cron/channel-health
 # A JANELA DE MANUTENÇÃO (#2388). Minuto a minuto porque o que ela decide é a
 # borda de um horário ESCOLHIDO POR UMA PESSOA: perder a abertura ou a retomada
@@ -107,6 +118,14 @@ CRONS="
 # de conectar o número está olhando a inbox agora. Lote de 5 e prazo de 45 s
 # dentro da rota: o pior caso cabe nos 60 s com folga.
 */10 * * * *|60|api/v1/cron/contact-names
+# O HISTÓRICO DO WHATSAPP (#999). A cada minuto: a importação anda em rodadas
+# curtas (3 conversas OU 300 mensagens OU 20 chamadas ao canal) e quem pediu
+# está olhando o andamento. Barato quando não há importação rodando: uma
+# leitura e nada mais. A rota trava cada importação antes de rodar, então uma
+# rodada lenta que passe do minuto não roda em dobro. O -m (60) fica acima do
+# prazo da chamada (45 s, lib/channels/historico/prazo.ts) com folga para o
+# banco; tests/unit/historico-cron.test.ts recusa se os dois se aproximarem.
+* * * * *|60|api/v1/cron/historico-import
 17 * * * *|60|api/v1/cron/contact-proposals-watcher
 23 * * * *|60|api/v1/cron/followup-sem-agente
 # O ANIVERSÁRIO. De hora em hora, e não uma vez ao dia, porque quem decide o

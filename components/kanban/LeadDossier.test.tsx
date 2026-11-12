@@ -45,6 +45,8 @@ vi.mock("@/hooks/i18n/useLocaleDeData", () => ({ useTagDeIdioma: () => "pt-BR" }
 vi.mock("@/hooks/auth/AuthProvider", () => ({
   useUser: () => ({ id: "u1", is_platform_admin: false, support: false }),
   useActiveOrg: () => ({ role: "agent" }),
+  // O seletor de etapa do cabeçalho (#3272) lê a régua de mover card.
+  usePermission: () => false,
 }));
 vi.mock("@/hooks/leads/useLeadTimeline", () => ({
   useLeadTimeline: () => ({
@@ -55,6 +57,16 @@ vi.mock("@/hooks/leads/useLeadTimeline", () => ({
     realtimeStatus: "connected",
     seguranca: { divergencias: 0 },
   }),
+}));
+
+// A seção "Conversas e ligações dos números" (#3669) só existe quando há pessoa
+// relacionada. Este arquivo mede a CASCA do dossiê — ordem e recolhimento —, e
+// com a lista vazia a seção não entra: é assim que a ordem esperada abaixo
+// continua sendo a de três seções. A seção com relacionado tem teste próprio
+// (`dossie-dos-numeros.test.tsx`).
+vi.mock("@/hooks/leads/useContatosRelacionados", () => ({
+  chaveDosContatosRelacionados: (leadId: string | null) => ["contatos-relacionados", leadId],
+  useContatosRelacionados: () => ({ data: { data: [] }, isLoading: false, isError: false }),
 }));
 
 vi.mock("./ContatoDoNegocio", () => ({ ContatoDoNegocio: () => <div data-peca="contato" /> }));

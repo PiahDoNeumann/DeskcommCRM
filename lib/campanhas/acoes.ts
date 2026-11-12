@@ -18,8 +18,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { ApiErrorCode } from "@/lib/api/errors";
 import { sendMessageHandler } from "@/app/api/v1/messages/_handler";
+import { PACING_DEFAULTS } from "@/lib/agent-engine/pacing/defaults";
 import { beginServiceAtOrigin } from "@/lib/atendimento/origem";
 
+import { baloesDaCampanha, enviarEmBaloes, pausaEntreBaloes } from "./baloes";
 import { baseLegalValida, motivoParaExcluir, recusouMarketing } from "./elegibilidade";
 import { ehStatusDaCampanha, podeTransitar } from "./maquina-de-estados";
 import { prepararCampanha } from "./preparacao";
@@ -36,14 +38,16 @@ import {
 import { conferirModeloDaCampanha } from "./modelo-da-conexao";
 import type { ModeloPreparado } from "./preparacao";
 import { renderizar } from "./renderizador";
-import type { ModoDaMensagem, StatusDaCampanha } from "./tipos";
+import { encerrarTransmissao } from "./transmissao";
+import type { ModoDaMensagem, StatusDaCampanha, VelocidadeDaCampanha } from "./tipos";
 
 export interface CampanhaCarregada {
   id: string;
   organization_id: string;
   name: string;
   status: StatusDaCampanha;
-  channel_session_id: string;
+  /** `null` = campanha de E-MAIL (#3441): ela não fala por número nenhum. */
+  channel_session_id: string | null;
   message_body: string | null;
   base_legal: string;
   lia_ref: string | null;
@@ -57,11 +61,19 @@ export interface CampanhaCarregada {
   teto_diario: number | null;
   teto_horario: number | null;
   description: string | null;
-  /** Migration 0710: `template` = modelo aprovado pelo número oficial. */
+  /** Migration 0710: `template` = modelo aprovado pelo número oficial; 9334: `email`. */
   message_mode: ModoDaMensagem;
+  /** Migration 9334 (#3441): assunto do e-mail; `null` nos demais modos. */
+  email_subject: string | null;
   provider_template_name: string | null;
   provider_template_language: string | null;
   provider_template_variables: unknown;
+  /** Migration 0711: `rapida` = rajada na rodada (só com modelo); 0712: `transmissao`. */
+  velocidade: VelocidadeDaCampanha;
+  /** Migration 0712: o id da transmissão no provedor, depois que a lista foi entregue. */
+  provider_broadcast_id: string | null;
+  /** Migration 0765: texto sai em balões, um por parágrafo. */
+  split_messages: boolean;
 }
 
 export type Recusa = { ok: false; codigo: ApiErrorCode; mensagem: string; status: number };
@@ -71,7 +83,8 @@ const COLUNAS =
   "id, organization_id, name, status, channel_session_id, message_body, base_legal, lia_ref, " +
   "audience_filter, audience_version, content_version, scheduled_at, description, " +
   "intervalo_segundos, janela_inicio_hora, janela_fim_hora, teto_diario, teto_horario, " +
-  "message_mode, provider_template_name, provider_template_language, provider_template_variables";
+  "message_mode, email_subject, provider_template_name, provider_template_language, " +
+  "provider_template_variables, velocidade, provider_broadcast_id, split_messages";
 
 export async function carregarCampanha(
   admin: SupabaseClient,
@@ -111,6 +124,19 @@ function recusaDeTransicao(de: StatusDaCampanha, para: StatusDaCampanha): Recusa
 
 /** O que toda campanha precisa ter antes de qualquer envio — inclusive o de teste. */
 function faltaParaEnviar(c: CampanhaCarregada): Recusa | null {
+  // E2a (#3441) entrega CONTEÚDO e PÚBLICO; o despacho do e-mail é a fatia
+  // seguinte. Preparar/agendar uma campanha de e-mail agora só criaria um
+  // snapshot que nenhum worker sabe mandar — a recusa é explícita, e não um
+  // silêncio que alguém interpretaria como "quase pronto".
+  if (c.message_mode === "email") {
+    return {
+      ok: false,
+      codigo: "campanha_conteudo_invalido",
+      mensagem:
+        "Campanha de e-mail ainda não é enviada: esta entrega guarda o assunto, o corpo e o público. O envio entra na fatia seguinte.",
+      status: 422,
+    };
+  }
   if (c.message_mode === "template") {
     if ((c.provider_template_name ?? "").trim() === "" || (c.provider_template_language ?? "").trim() === "") {
       return {
@@ -152,6 +178,15 @@ export async function modeloDaCampanha(
   c: CampanhaCarregada,
 ): Promise<Desfecho<{ modelo?: ModeloPreparado }>> {
   if (c.message_mode !== "template") return { ok: true };
+  const numero = c.channel_session_id;
+  if (numero === null) {
+    return {
+      ok: false,
+      codigo: "campanha_canal_indisponivel",
+      mensagem: "Campanha com modelo aprovado exige o número oficial que tem o modelo.",
+      status: 409,
+    };
+  }
   const variaveis = variaveisDaCampanhaSchema.safeParse(c.provider_template_variables ?? {});
   if (!variaveis.success) {
     return {
@@ -165,7 +200,7 @@ export async function modeloDaCampanha(
     admin,
     {
       organizationId: c.organization_id,
-      channelSessionId: c.channel_session_id,
+      channelSessionId: numero,
       name: c.provider_template_name ?? "",
       language: c.provider_template_language ?? "",
     },
@@ -403,7 +438,12 @@ export async function cancelarAcao(
     .eq("campaign_id", c.id)
     .in("status", ["pending", "queued"])
     .select("id");
-  return { ok: true, cancelados: (cancelados ?? []).length };
+  // Por broadcast, a lista está com o provedor: cancelar lá o que ainda não
+  // saiu, trazer o último retrato e fechar quem ficou `sending` (migration 0712).
+  // Numa transmissão todo mundo está `sending` — sem somar estes, o operador
+  // via «0 cancelados» com o cancelamento feito.
+  const fechadosNaTransmissao = await encerrarTransmissao(admin, c, agora);
+  return { ok: true, cancelados: (cancelados ?? []).length + fechadosNaTransmissao };
 }
 
 export async function duplicarAcao(
@@ -420,6 +460,7 @@ export async function duplicarAcao(
       channel_session_id: c.channel_session_id,
       message_body: c.message_body,
       message_mode: c.message_mode,
+      email_subject: c.email_subject,
       provider_template_name: c.provider_template_name,
       provider_template_language: c.provider_template_language,
       provider_template_variables: c.provider_template_variables ?? {},
@@ -431,6 +472,8 @@ export async function duplicarAcao(
       janela_fim_hora: c.janela_fim_hora,
       teto_diario: c.teto_diario,
       teto_horario: c.teto_horario,
+      velocidade: c.velocidade,
+      split_messages: c.split_messages,
       created_by: autorId,
       // Nada de destinatário, resultado, agenda ou carimbo de execução: a cópia
       // é uma INTENÇÃO nova, e herdar números faria a tela mostrar entrega de
@@ -564,22 +607,39 @@ export async function testarAcao(
     conteudo = { type: "text", body: render.texto };
   }
 
-  const boundary = await beginServiceAtOrigin(admin, c.organization_id, linha.id, c.channel_session_id);
-  const mensagem = await sendMessageHandler(
-    admin,
-    {
-      organization_id: c.organization_id,
-      serviceBoundary: boundary,
-      proactiveContext: { organizationId: c.organization_id, contactId: linha.id },
-      actor: { type: "webhook_source", id: `campaign-test:${c.id}` },
-      requestId: `campaign-test:${c.id}:${randomUUID()}`,
-    } as Parameters<typeof sendMessageHandler>[1],
-    {
-      conversation_id: boundary.conversation_id,
-      ...conteudo,
-      metadata: { source: "campaign_test", campaign_id: c.id },
-    } as Parameters<typeof sendMessageHandler>[2],
-  );
+  const numeroDoTeste = c.channel_session_id;
+  if (numeroDoTeste === null) {
+    return {
+      ok: false,
+      codigo: "campanha_conteudo_invalido",
+      mensagem: "Campanha de e-mail não tem teste de envio: o despacho do e-mail é a fatia seguinte.",
+      status: 422,
+    };
+  }
+  const boundary = await beginServiceAtOrigin(admin, c.organization_id, linha.id, numeroDoTeste);
+  // O teste divide como a rodada divide (`baloes.ts`): quem testa precisa ver
+  // no aparelho os mesmos balões que o destinatário vai receber.
+  const baloes = conteudo.type === "text" ? baloesDaCampanha(conteudo.body, c.split_messages === true) : [conteudo.body];
+  const { desfecho: mensagem } = await enviarEmBaloes(baloes, {
+    enviar: (texto) =>
+      sendMessageHandler(
+        admin,
+        {
+          organization_id: c.organization_id,
+          serviceBoundary: boundary,
+          proactiveContext: { organizationId: c.organization_id, contactId: linha.id },
+          actor: { type: "webhook_source", id: `campaign-test:${c.id}` },
+          requestId: `campaign-test:${c.id}:${randomUUID()}`,
+        } as Parameters<typeof sendMessageHandler>[1],
+        {
+          conversation_id: boundary.conversation_id,
+          ...conteudo,
+          ...(conteudo.type === "text" ? { body: texto } : {}),
+          metadata: { source: "campaign_test", campaign_id: c.id },
+        } as Parameters<typeof sendMessageHandler>[2],
+      ),
+    esperar: () => new Promise((ok) => setTimeout(ok, pausaEntreBaloes(PACING_DEFAULTS))),
+  });
 
   const status = (mensagem as { status?: string }).status ?? "desconhecido";
   if (status === "failed") {

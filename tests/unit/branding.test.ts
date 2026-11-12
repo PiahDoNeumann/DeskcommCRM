@@ -307,6 +307,12 @@ const MARCA_CONGELADA: Record<string, EntradaDeMarca> = {
     motivo: "o mesmo cookie de sessão, lido no servidor; tem de casar com o do browser",
     marcas: ["sb-deskcomm-auth"],
   },
+  "lib/supabase/identidade-validada.test.ts": {
+    categoria: "INFRA",
+    motivo:
+      "duplo de teste que monta o cookie de sessão para conferir que a chave do cache curto é o hash dos cookies. O nome tem de ser o mesmo de `lib/supabase/server.ts` e `browser.ts`, senão o teste validaria uma chave que produção nunca vê",
+    marcas: ["sb-deskcomm-auth", "sb-deskcomm-auth"],
+  },
   "lib/impersonate/cookie.ts": {
     categoria: "INFRA",
     motivo:
@@ -856,6 +862,12 @@ type CategoriaDeHost =
 type EntradaDeHost = { categoria: CategoriaDeHost; motivo: string };
 
 const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
+  // ── amostra de FORMATO: chega à tela como prévia, não é destino de chamada ──
+  "loja.exemplo": {
+    categoria: "AMOSTRA",
+    motivo:
+      "exemplo de LINK na prévia de variável (`lib/variaveis/previa.ts`): mostra a quem opera o formato do valor que entra no texto. O produto nunca faz requisição para este host — é amostra, no mesmo sentido do `wa.me` da tela de Conversões.",
+  },
   "chatgpt.com": {
     categoria: "CONSOLE",
     motivo:
@@ -905,6 +917,12 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
     motivo:
       "endpoint da plataforma que roda o crawler do Google Places (`lib/prospecting/provider.ts`). É o destino do request, com a chave da PRÓPRIA organização — trocar pelo domínio do revendedor quebraria a chamada, e esconder o nome não esconde para onde o dado vai.",
   },
+  // ── prospecção (#1758): provedor `scavio`, escolhido por organização ──
+  "api.scavio.dev": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "endpoint da API da Scavio que busca os lugares do Google Maps (`lib/prospecting/provedor-scavio.ts`), só para a organização que escolheu `scavio` em `settings.prospecting.provider`. É o destino do request, com a chave da PRÓPRIA organização — trocar pelo domínio do revendedor quebraria a chamada.",
+  },
   // ── identificador de fio: NÃO é destino de chamada nem texto de tela ──────
   "s.whatsapp.net": {
     categoria: "PROTOCOLO",
@@ -937,10 +955,20 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
     motivo:
       "endpoint da OpenRouter nos três caminhos que falam com ela (runtime, catálogo de modelos e prova de crédito). O `HTTP-Referer` da atribuição NÃO mora aqui — sai de env (OPENROUTER_APP_URL), e quem o defende é tests/unit/openrouter-atribuicao.test.ts.",
   },
+  "models.dev": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "catálogo público consultado pelo cron para descobrir IDs nativos, preços e capacidades da OpenAI e Anthropic. É destino fixo de leitura de metadados, sem credenciais nem dados de organizações; não é domínio de uma instalação ou revendedor.",
+  },
   "api.deepseek.com": {
     categoria: "FORNECEDOR",
     motivo:
       "endpoint da API da DeepSeek (OpenAI-compatível) no registry de produção, no runtime de ensaio, no validador de chave e na prova de crédito. É o destino do request, não texto de interface; trocar pelo domínio do revendedor faria a chamada não chegar.",
+  },
+  "api.elevenlabs.io": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "endpoint da API do ElevenLabs nos três caminhos que falam com ela: síntese da voz do agente (`lib/ai/voz/sintetizar.ts`), transcrição pelo Scribe (`lib/messaging/media/transcription-elevenlabs.ts`) e validação da chave (`GET /v1/voices`, em lib/ai/provider-validators.ts). É o destino do request, com a chave da PRÓPRIA organização; trocar pelo domínio do revendedor faria a chamada não chegar.",
   },
   "router.requesty.ai": {
     categoria: "FORNECEDOR",
@@ -1020,6 +1048,11 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
   "console.anthropic.com": {
     categoria: "CONSOLE",
     motivo: "painel de chaves da Anthropic. Mesmo caso: é de onde a credencial do usuário sai.",
+  },
+  "elevenlabs.io": {
+    categoria: "CONSOLE",
+    motivo:
+      "painel onde o usuário gera a PRÓPRIA chave do ElevenLabs (`ondePegarAChave` de PROVEDORES_DE_SERVICO em lib/ai/pontos/provedores-de-servico.ts). Endereço do fornecedor, não nosso.",
   },
   "console.typesafe.ai": {
     categoria: "CONSOLE",
@@ -1157,6 +1190,11 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
     categoria: "RECONHECIMENTO",
     motivo:
       "agregador de bio-links: marca agregador sem fetch. Nunca chamado, nunca exibido.",
+  },
+  "linkedin.com": {
+    categoria: "RECONHECIMENTO",
+    motivo:
+      "rede social reconhecida pelo host no mapeador de links da prospecção (Spec 26, `DOMINIOS_DE_REDE`). Nunca chamada, nunca exibida: o endereço entra na aba Links, que mostra o rótulo traduzido.",
   },
   "sites.google.com": {
     categoria: "RECONHECIMENTO",
@@ -1354,6 +1392,9 @@ describe("catraca de host de terceiro no código que embarca", () => {
       // CONSOLE — o link "Onde pegar a chave" da tela de Credenciais.
       "console.typesafe.ai",
       "deskcomm.app",
+      // Decisão escrita: painel de chaves do ElevenLabs, o mesmo caso dos outros
+      // CONSOLE — o link "Onde pegar a chave" da tela de Credenciais.
+      "elevenlabs.io",
       // Decisão escrita (spec 24, auditoria de site): marca agregador e conta
       // como link social no raio-X — nunca chamada, nunca exibida (a tela mostra
       // o rótulo traduzido).
@@ -1369,6 +1410,15 @@ describe("catraca de host de terceiro no código que embarca", () => {
       // Decisão escrita (spec 24, auditoria de site): agregador de bio-links,
       // marca agregador sem fetch — nunca chamado, nunca exibido.
       "linkbio.co",
+      // Decisão escrita (Spec 26, mapeador de links da prospecção): rede social
+      // reconhecida pelo host — nunca chamada, nunca exibida (a aba Links mostra
+      // o rótulo traduzido).
+      "linkedin.com",
+      // Decisão escrita: amostra de FORMATO de valor na prévia de variável
+      // (`lib/variaveis/previa.ts`) — a quem opera vê `loja.exemplo/previa/ana`
+      // como exemplo do link que a variável entrega. O produto nunca faz
+      // requisição para ele; mesma natureza do `wa.me` da tela de Conversões.
+      "loja.exemplo",
       // Link que abre o pino que o CLIENTE mandou (`lib/messaging/localizacao.ts`).
       // Mesma natureza do `wa.me` abaixo: o produto não fala com o host, quem
       // abre é o celular do atendente. Crescimento escrito, como a regra pede.
